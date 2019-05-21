@@ -16,8 +16,8 @@ from tqdm import tqdm
 
 
 raw_file = './data/raw/text.txt'
-seg_file = './data/raw/seg_text.txt'
 clean_file = './data/raw/clean_text.txt'
+seg_file = './data/raw/seg_text.txt'
 
 
 def stat(seq_length, type):
@@ -105,13 +105,14 @@ def clean_txt(in_path, seg_path, out_path, is_clean=True, is_seg=True):
 
 
 if __name__ == '__main__':
-    # clean_txt(raw_file, seg_file, clean_file)
     program = os.path.basename(sys.argv[0])
     logger = logging.getLogger(program)
 
     logging.basicConfig(format='%(asctime)s: %(levelname)s: %(message)s')
     logging.root.setLevel(level=logging.INFO)
     logger.info("running %s" % ' '.join(sys.argv))
+    # clean_txt(raw_file, seg_file, clean_file)
+
     model = word2vec.Word2Vec(PathLineSentences(seg_file), sg=1, size=300, window=5, min_count=10, sample=1e-4,
                               workers=multiprocessing.cpu_count())
     model.wv.save_word2vec_format('./data/processed/word2vec.txt', binary=False)

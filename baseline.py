@@ -4,6 +4,7 @@ import random
 import os
 import datetime
 from collections import Counter
+import multiprocessing
 
 
 def set_seed():
@@ -429,6 +430,8 @@ class Baseline:
                 os.mkdir(self.model_path)
 
             for epoch in range(self.epochs):
+                print('Epoch - {}'.format(epoch + 1))
+
                 if self.bag:
                     train_batchers = self.data_batcher(sent_train, 'bag_relation_train.txt', padding=False,
                                                        shuffle=True)
@@ -439,7 +442,7 @@ class Baseline:
 
                     losses = self.run_train(sess, batch)
                     global_step += 1
-                    if global_step % 50 == 0:
+                    if global_step % 100 == 0:
                         time_str = datetime.datetime.now().isoformat()
                         tempstr = "{}: step {}, classifier_loss {:g}".format(time_str, global_step, losses)
                         print(tempstr)
@@ -500,8 +503,10 @@ def main(_):
     with tf.Graph().as_default():
         set_seed()
         sess = tf.Session(
-            config=tf.ConfigProto(gpu_options=gpu_options, allow_soft_placement=True, intra_op_parallelism_threads=1,
-                                  inter_op_parallelism_threads=1))
+
+            config=tf.ConfigProto(gpu_options=gpu_options, allow_soft_placement=True,
+                                  intra_op_parallelism_threads=int(multiprocessing.cpu_count() / 2),
+                                  inter_op_parallelism_threads=int(multiprocessing.cpu_count() / 2)))
         with sess.as_default():
             initializer = tf.contrib.layers.xavier_initializer()
             with tf.variable_scope('', initializer=initializer):
