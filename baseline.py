@@ -1,10 +1,12 @@
 import numpy as np
 import tensorflow as tf
+import tensorflow.contrib as tc
 import random
 import os
 import datetime
 from collections import Counter
 import multiprocessing
+from preprocess import create_serial, create_wordVec, load_pkl, dump_pkl
 
 
 def set_seed():
@@ -19,7 +21,7 @@ set_seed()
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_string('cuda', '0', 'gpu id')
 tf.app.flags.DEFINE_boolean('pre_embed', True, 'load pre-trained word2vec')
-tf.app.flags.DEFINE_integer('batch_size', 50, 'batch size')
+tf.app.flags.DEFINE_integer('batch_size', 64, 'batch size')
 tf.app.flags.DEFINE_integer('epochs', 200, 'max train epochs')
 tf.app.flags.DEFINE_integer('hidden_dim', 300, 'dimension of hidden embedding')
 tf.app.flags.DEFINE_integer('word_dim', 300, 'dimension of word embedding')
@@ -28,7 +30,8 @@ tf.app.flags.DEFINE_integer('pos_limit', 15, 'max distance of position embedding
 tf.app.flags.DEFINE_integer('sen_len', 60, 'sentence length')
 tf.app.flags.DEFINE_integer('window', 3, 'window size')
 tf.app.flags.DEFINE_string('model_path', './model', 'save model dir')
-tf.app.flags.DEFINE_string('data_path', './data/raw', 'data dir to load')
+tf.app.flags.DEFINE_string('raw_data_path', './data/raw', 'data dir to load')
+tf.app.flags.DEFINE_string('processed_data_path', './data/processed', 'data dir to load')
 tf.app.flags.DEFINE_string('level', 'bag', 'bag level or sentence level, option:bag/sent')
 tf.app.flags.DEFINE_string('mode', 'train', 'train or test')
 tf.app.flags.DEFINE_float('dropout', 0.5, 'dropout rate')
@@ -47,7 +50,8 @@ class Baseline:
         self.word_dim = flags.word_dim
         self.hidden_dim = flags.hidden_dim
         self.batch_size = flags.batch_size
-        self.data_path = flags.data_path
+        self.raw_data_path = flags.raw_data_path
+        self.processed_data_path = flags.processed_data_path
         self.model_path = flags.model_path
         self.mode = flags.mode
         self.epochs = flags.epochs
@@ -62,16 +66,17 @@ class Baseline:
             self.bag = True
 
         self.pos_num = 2 * self.pos_limit + 3
-        self.relation2id = self.load_relation()
-        self.num_classes = len(self.relation2id)
+        # self.relation2id = self.load_relation()
+        # self.num_classes = len(self.relation2id)
+        self.num_classes = 35
 
         if self.pre_embed:
-            self.wordMap, word_embed = self.load_wordVec()
+            self.word_map, word_embed = self.load_wordVec()
             self.word_embedding = tf.get_variable(initializer=word_embed, name='word_embedding', trainable=False)
 
         else:
-            self.wordMap = self.load_wordMap()
-            self.word_embedding = tf.get_variable(shape=[len(self.wordMap), self.word_dim], name='word_embedding',
+            self.word_map = self.load_wordMap()
+            self.word_embedding = tf.get_variable(shape=[len(self.word_map), self.word_dim], name='word_embedding',
                                                   trainable=True)
 
         self.pos_e1_embedding = tf.get_variable(name='pos_e1_embedding', shape=[self.pos_num, self.pos_dim])
@@ -86,115 +91,40 @@ class Baseline:
             self.bag_level()
         else:
             self.sentence_level()
-        self._classifier_train_op = tf.train.AdamOptimizer(self.lr).minimize(self.classifier_loss)
-
-    def pos_index(self, x):
-        if x < -self.pos_limit:
-            return 0
-        if x >= -self.pos_limit and x <= self.pos_limit:
-            return x + self.pos_limit + 1
-        if x > self.pos_limit:
-            return 2 * self.pos_limit + 2
+        # self._classifier_train_op = tf.train.AdamOptimizer(self.lr).minimize(self.classifier_loss)
+        self._classifier_train_op = tc.opt.LazyAdamOptimizer(self.lr).minimize(self.classifier_loss)
 
     def load_wordVec(self):
-        wordMap = {}
-        wordMap['PAD'] = len(wordMap)
-        wordMap['UNK'] = len(wordMap)
-        word_embed = []
-        for line in open(os.path.join(self.data_path, 'word2vec.txt')):
-            content = line.strip().split()
-            if len(content) != self.word_dim + 1:
-                continue
-            wordMap[content[0]] = len(wordMap)
-            word_embed.append(np.asarray(content[1:], dtype=np.float32))
-
-        word_embed = np.stack(word_embed)
-        embed_mean, embed_std = word_embed.mean(), word_embed.std()
-
-        pad_embed = np.random.normal(embed_mean, embed_std, (2, self.word_dim))
-        word_embed = np.concatenate((pad_embed, word_embed), axis=0)
-        word_embed = word_embed.astype(np.float32)
-        return wordMap, word_embed
+        word_map = load_pkl(os.path.join(self.processed_data_path, 'word_map.pkl'))
+        word_embed = load_pkl(os.path.join(self.processed_data_path, 'word_embed.pkl'))
+        return word_map, word_embed
 
     def load_wordMap(self):
-        wordMap = {}
-        wordMap['PAD'] = len(wordMap)
-        wordMap['UNK'] = len(wordMap)
+        word_map = {}
+        word_map['PAD'] = len(word_map)
+        word_map['UNK'] = len(word_map)
         all_content = []
-        for line in open(os.path.join(self.data_path, 'sent_train.txt')):
+        for line in open(os.path.join(self.raw_data_path, 'sent_train.txt')):
             all_content += line.strip().split('\t')[3].split()
         for item in Counter(all_content).most_common():
             if item[1] > self.word_frequency:
-                wordMap[item[0]] = len(wordMap)
+                word_map[item[0]] = len(word_map)
             else:
                 break
-        return wordMap
+        return word_map
 
     def load_relation(self):
         relation2id = {}
-        for line in open(os.path.join(self.data_path, 'relation2id.txt')):
+        for line in open(os.path.join(self.raw_data_path, 'relation2id.txt')):
             relation, id_ = line.strip().split()
             relation2id[relation] = int(id_)
         return relation2id
 
-    def load_sent(self, filename):
-        sentence_dict = {}
-        with open(os.path.join(self.data_path, filename), 'r') as fr:
-            for line in fr:
-                id_, en1, en2, sentence = line.strip().split('\t')
-                sentence = sentence.split()
-                en1_pos = 0
-                en2_pos = 0
-                for i in range(len(sentence)):
-                    if sentence[i] == en1:
-                        en1_pos = i
-                    if sentence[i] == en2:
-                        en2_pos = i
-                words = []
-                pos1 = []
-                pos2 = []
-
-                length = min(self.sen_len, len(sentence))
-
-                for i in range(length):
-                    words.append(self.wordMap.get(sentence[i], self.wordMap['UNK']))
-                    pos1.append(self.pos_index(i - en1_pos))
-                    pos2.append(self.pos_index(i - en2_pos))
-
-                if length < self.sen_len:
-                    for i in range(length, self.sen_len):
-                        words.append(self.wordMap['PAD'])
-                        pos1.append(self.pos_index(i - en1_pos))
-                        pos2.append(self.pos_index(i - en2_pos))
-                sentence_dict[id_] = np.reshape(np.asarray([words, pos1, pos2], dtype=np.int32), (1, 3, self.sen_len))
-        return sentence_dict
-
-    def data_batcher(self, sentence_dict, filename, padding=False, shuffle=True):
+    def data_batcher(self, all_files, padding=False, shuffle=True):
         if self.bag:
-            all_bags = []
-            all_sents = []
-            all_labels = []
-            with open(os.path.join(self.data_path, filename), 'r') as fr:
-                for line in fr:
-                    rel = [0] * self.num_classes
-                    try:
-                        bag_id, _, _, sents, types = line.strip().split('\t')
-                        type_list = types.split()
-                        for tp in type_list:
-                            if len(
-                                    type_list) > 1 and tp == '0':  # if a bag has multiple relations, we only consider non-NA relations
-                                continue
-                            rel[int(tp)] = 1
-                    except:
-                        bag_id, _, _, sents = line.strip().split('\t')
-
-                    sent_list = []
-                    for sent in sents.split():
-                        sent_list.append(sentence_dict[sent])
-
-                    all_bags.append(bag_id)
-                    all_sents.append(np.concatenate(sent_list, axis=0))
-                    all_labels.append(np.asarray(rel, dtype=np.float32))
+            all_sents = all_files[0]
+            all_bags = all_files[1]
+            all_labels = all_files[2]
 
             self.data_size = len(all_bags)
             self.datas = all_bags
@@ -223,34 +153,12 @@ class Baseline:
 
                 yield out_sents, out_labels, out_sent_nums
         else:
-            all_sent_ids = []
-            all_sents = []
-            all_labels = []
-            with open(os.path.join(self.data_path, filename), 'r') as fr:
-                for line in fr:
-                    rel = [0] * self.num_classes
-                    try:
-                        sent_id, types = line.strip().split('\t')
-                        type_list = types.split()
-                        for tp in type_list:
-                            if len(
-                                    type_list) > 1 and tp == '0':  # if a sentence has multiple relations, we only consider non-NA relations
-                                continue
-                            rel[int(tp)] = 1
-                    except:
-                        sent_id = line.strip()
-
-                    all_sent_ids.append(sent_id)
-                    all_sents.append(sentence_dict[sent_id])
-
-                    all_labels.append(np.reshape(np.asarray(rel, dtype=np.float32), (-1, self.num_classes)))
+            all_sent_ids = all_files[0]
+            all_sents = all_files[1]
+            all_labels = all_files[2]
 
             self.data_size = len(all_sent_ids)
             self.datas = all_sent_ids
-
-            all_sents = np.concatenate(all_sents, axis=0)
-            all_labels = np.concatenate(all_labels, axis=0)
-
             data_order = list(range(self.data_size))
             if shuffle:
                 np.random.shuffle(data_order)
@@ -419,27 +327,32 @@ class Baseline:
                             rel_list.append(str(j))
                     fw.write(self.datas[i] + '\t' + ' '.join(rel_list) + '\n')
 
+    def load_set(self, set_type):
+        all_pkls = []
+        print('Loading {} sets'.format(set_type))
+        path = os.path.join(self.processed_data_path, set_type, 'bag' if self.bag else 'sent')
+        for file in os.listdir(path):
+            all_pkls.append(load_pkl(os.path.join(path, file)))
+        print('Num of samples - {}'.format(len(all_pkls[-1])))
+        return all_pkls
+
     def run_model(self, sess, saver):
         if self.mode == 'train':
             global_step = 0
-            sent_train = self.load_sent('sent_train.txt')
-            sent_dev = self.load_sent('sent_dev.txt')
             max_f1 = 0.0
-
+            all_files = {'train': [], 'dev': []}
             if not os.path.isdir(self.model_path):
                 os.mkdir(self.model_path)
 
+            set_types = ['train', 'dev']
+            for st in set_types:
+                all_files[st] = self.load_set(st)
+
             for epoch in range(self.epochs):
                 print('Epoch - {}'.format(epoch + 1))
+                train_batchers = self.data_batcher(all_files['train'], padding=False, shuffle=True)
 
-                if self.bag:
-                    train_batchers = self.data_batcher(sent_train, 'bag_relation_train.txt', padding=False,
-                                                       shuffle=True)
-                else:
-                    train_batchers = self.data_batcher(sent_train, 'sent_relation_train.txt', padding=False,
-                                                       shuffle=True)
                 for batch in train_batchers:
-
                     losses = self.run_train(sess, batch)
                     global_step += 1
                     if global_step % 100 == 0:
@@ -447,12 +360,7 @@ class Baseline:
                         tempstr = "{}: step {}, classifier_loss {:g}".format(time_str, global_step, losses)
                         print(tempstr)
                     if global_step % 200 == 0:
-                        if self.bag:
-                            dev_batchers = self.data_batcher(sent_dev, 'bag_relation_dev.txt', padding=True,
-                                                             shuffle=False)
-                        else:
-                            dev_batchers = self.data_batcher(sent_dev, 'sent_relation_dev.txt', padding=True,
-                                                             shuffle=False)
+                        dev_batchers = self.data_batcher(all_files['dev'], padding=True, shuffle=False)
                         all_preds, all_labels = self.run_dev(sess, dev_batchers)
 
                         # when calculate f1 score, we don't consider whether NA results are predicted or not
@@ -487,33 +395,38 @@ class Baseline:
             except:
                 raise ValueError('Unvalid model name')
 
-            sent_test = self.load_sent('sent_test.txt')
+            test_pkls = self.load_set('test')
             if self.bag:
-                test_batchers = self.data_batcher(sent_test, 'bag_relation_test.txt', padding=True, shuffle=False)
+                test_batchers = self.data_batcher(test_pkls, padding=True, shuffle=False)
             else:
-                test_batchers = self.data_batcher(sent_test, 'sent_relation_test.txt', padding=True, shuffle=False)
+                test_batchers = self.data_batcher(test_pkls, padding=True, shuffle=False)
 
             self.run_test(sess, test_batchers)
 
 
 def main(_):
-    tf.reset_default_graph()
-    print('build model')
-    gpu_options = tf.GPUOptions(visible_device_list=FLAGS.cuda, allow_growth=True)
-    with tf.Graph().as_default():
-        set_seed()
-        sess = tf.Session(
+    if FLAGS.mode == 'prepare':
+        print('Prepare files')
+        create_wordVec(FLAGS)
+        create_serial(FLAGS)
+    else:
+        tf.reset_default_graph()
+        print('build model')
+        gpu_options = tf.GPUOptions(visible_device_list=FLAGS.cuda, allow_growth=True)
+        with tf.Graph().as_default():
+            set_seed()
+            sess = tf.Session(
 
-            config=tf.ConfigProto(gpu_options=gpu_options, allow_soft_placement=True,
-                                  intra_op_parallelism_threads=int(multiprocessing.cpu_count() / 2),
-                                  inter_op_parallelism_threads=int(multiprocessing.cpu_count() / 2)))
-        with sess.as_default():
-            initializer = tf.contrib.layers.xavier_initializer()
-            with tf.variable_scope('', initializer=initializer):
-                model = Baseline(FLAGS)
-            sess.run(tf.global_variables_initializer())
-            saver = tf.train.Saver(max_to_keep=None)
-            model.run_model(sess, saver)
+                config=tf.ConfigProto(gpu_options=gpu_options, allow_soft_placement=True,
+                                      intra_op_parallelism_threads=int(multiprocessing.cpu_count() / 2),
+                                      inter_op_parallelism_threads=int(multiprocessing.cpu_count() / 2)))
+            with sess.as_default():
+                initializer = tf.contrib.layers.xavier_initializer()
+                with tf.variable_scope('', initializer=initializer):
+                    model = Baseline(FLAGS)
+                sess.run(tf.global_variables_initializer())
+                saver = tf.train.Saver(max_to_keep=None)
+                model.run_model(sess, saver)
 
 
 if __name__ == '__main__':
