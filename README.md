@@ -49,8 +49,8 @@ Predicted results will be stored in result_sent.txt or result_bag.txt.
 
 模型 | 线下sent | 线上sent | 线下bag | 线上bag | 训练时长
 ---|---|---|---|---|---
-官方（报告）| - | 0.22 | - | 0.31 | -
-CNN with attention | 0.226087 | 0.21564 | | | 4h40min
+官方（报告）| - | 0.22 | - | 0.31 | - | 4h40min(sent)
+CNN with attention | 0.226087 | 0.21564 | | | 2h45min(sent)
 
 
 ## 参考文献
