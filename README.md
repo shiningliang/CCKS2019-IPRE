@@ -23,7 +23,15 @@ python pretrain_embedding.py
 - seg_file： 分词后语料
 - word2vec.txt：词向量文件
 
-### Step 3: 训练模型
+### Step 3: 生成词典和词向量矩阵的pickle文件
+```
+python baseline.py --mode prepare
+```
+Then you will get two pickle files in './data/processed'
+- word_map.pkl
+- word_embed.pkl
+
+### Step 4: 训练模型
 You can use the following command to train models for Sent-Track or Bag-Track:
 ```
 python baseline.py --level sent 
@@ -35,7 +43,7 @@ from gensim.models import word2vec
 model = word2vec.Word2Vec(sentences, sg=1, size=300, window=5, min_count=10, negative=5, sample=1e-4, workers=10)
 ```
 
-### Step 4: 测试模型
+### Step 5: 测试模型
 You can use the following command to test models for Sent-Track or Bag-Track:
 ```
 python baseline.py --mode test --level sent 
